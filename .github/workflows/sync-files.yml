@@ -111,12 +111,12 @@ jobs:
           rm -rf tmp data.zip
           echo "下载并复制完成"
 
-      - name: de 
+      - name: 验证pat
         if: steps.check.outputs.has-changes == 'true'
         env:
           PAT_PUSH: ${{ secrets.PAT_PUSH }}
         run: |
-          # 检查 secret 是否存在
+       
           if [ -z "${PAT_PUSH}" ]; then
             echo "ERROR: secrets.PAT_PUSH 。"
             exit 1
@@ -125,7 +125,7 @@ jobs:
           echo "正在验证 PAT..."
           resp=$(curl -s -H "Authorization: token ${PAT_PUSH}" https://api.github.com/user || true)
 
-          # 解析
+   
           if command -v jq >/dev/null 2>&1; then
             login=$(echo "$resp" | jq -r .login 2>/dev/null || echo "")
           else
