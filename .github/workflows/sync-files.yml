@@ -111,7 +111,7 @@ jobs:
           rm -rf tmp data.zip
           echo "下载并复制完成"
 
-      - name: Debug: 验证 PAT 有效性（不打印 token）
+      - name: Debug: 验证 PAT 
         if: steps.check.outputs.has-changes == 'true'
         env:
           PAT_PUSH: ${{ secrets.PAT_PUSH }}
