@@ -1,4 +1,4 @@
-name: 同步文件（轮询 + 记录上次 upstream commit）
+name: 同步文件（轮询 + PAT 推送）
 
 on:
   schedule:
@@ -13,19 +13,28 @@ jobs:
       UPSTREAM_OWNER: PizazzGY
       UPSTREAM_REPO: NewTVBox
       UPSTREAM_BRANCH: main
-      # 若上游 ZIP 地址会变化，请在此修改
       ZIP_URL: https://raw.githubusercontent.com/PizazzGY/NewTVBox/refs/heads/main/%E5%8D%95%E7%BA%BF%E8%B7%AF.zip
       LAST_SYNC_FILE: .github/last_synced_upstream_commit
     permissions:
       contents: write
 
     steps:
-    - name: 检出代码
+    - name: 防止循环触发（若触发者为 PAT 所属用户则退出）
+      # 需要你在仓库 Secrets 中设置 PAT_PUSH_USER（PAT 所属用户名），例如 "my-sync-bot"
+      run: |
+        if [ -n "${{ secrets.PAT_PUSH_USER }}" ] && [ "${{ github.actor }}" = "${{ secrets.PAT_PUSH_USER }}" ]; then
+          echo "由自动化用户 '${{ secrets.PAT_PUSH_USER }}' 触发，退出以防循环。"
+          exit 0
+        fi
+        echo "触发者: $GITHUB_ACTOR"
+
+    - name: 检出代码（不保留默认凭证）
       uses: actions/checkout@v4
       with:
+        # 使用默认 GITHUB_TOKEN 进行 checkout，但不 persist 到 git credential，以便后面用 PAT 推送
         token: ${{ secrets.GITHUB_TOKEN }}
         fetch-depth: 0
-        persist-credentials: true
+        persist-credentials: false
 
     - name: 设置 Git 配置
       run: |
@@ -81,7 +90,6 @@ jobs:
           echo "下载失败"
           exit 1
         fi
-        echo "解压到临时目录 tmp ..."
         mkdir -p tmp
         unzip -o "data.zip" -d tmp
         echo "查找 tvbox 目录..."
@@ -100,23 +108,30 @@ jobs:
             exit 1
           fi
         fi
-        echo "清理临时文件..."
         rm -rf tmp data.zip
         echo "下载并复制完成"
 
-    - name: 更新 last_synced 文件并提交更改（仅在上游变更时）
+    - name: 使用 PAT 更新 last_synced 文件并推送更改（仅在上游变更时）
       if: steps.check.outputs.has-changes == 'true'
+      env:
+        PAT_PUSH: ${{ secrets.PAT_PUSH }}
       run: |
+        set -e
         echo "${{ steps.upstream.outputs.upstream_sha }}" > "${{ env.LAST_SYNC_FILE }}"
         git add "${{ env.LAST_SYNC_FILE }}" || true
-        # 如果有真实文件更改则一并提交；若没有文件差异，也提交一个空提交以记录已处理的 upstream SHA
+        # 准备提交（含标记 [auto-sync]）
         if [ -n "$(git status --porcelain)" ]; then
           git add .
-          git commit -m "自动更新 (同步自 ${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}@${{ steps.upstream.outputs.upstream_sha }})"
-          git push origin HEAD:main
-          echo "已提交并推送更改。"
+          git commit -m "自动更新 (同步自 ${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}@${{ steps.upstream.outputs.upstream_sha }}) [auto-sync]"
         else
-          git commit --allow-empty -m "更新 last_synced_upstream_commit -> ${{ steps.upstream.outputs.upstream_sha }}"
-          git push origin HEAD:main
-          echo "无内容变化，但已更新 last_synced 文件并推送。"
+          # 没有内容变化，但仍要记录 upstream SHA，通过空提交记录
+          git commit --allow-empty -m "更新 last_synced_upstream_commit -> ${{ steps.upstream.outputs.upstream_sha }} [auto-sync]"
         fi
+
+        # 使用 PAT 修改远程 URL 并 push（确保你在仓库 Secrets 中配置 PAT_PUSH）
+        echo "设置远程 origin URL（使用 PAT）"
+        git remote set-url origin https://x-access-token:${PAT_PUSH}@github.com/${{ github.repository }}.git
+
+        echo "推送到 origin main ..."
+        git push origin HEAD:main
+        echo "已用 PAT 推送更改。"
