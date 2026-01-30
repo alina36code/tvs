@@ -19,153 +19,153 @@ jobs:
       contents: write
 
     steps:
-    - name: 防止循环触发（若触发者为 PAT 所属用户则退出）
-      # 需要你在仓库 Secrets 中设置 PAT_PUSH_USER（PAT 所属用户名），例如 "my-sync-bot"
-      run: |
-        if [ -n "${{ secrets.PAT_PUSH_USER }}" ] && [ "${{ github.actor }}" = "${{ secrets.PAT_PUSH_USER }}" ]; then
-          echo "由自动化用户 '${{ secrets.PAT_PUSH_USER }}' 触发，退出以防循环。"
-          exit 0
-        fi
-        echo "触发者: $GITHUB_ACTOR"
+      - name: 防止循环触发（若触发者为 PAT 所属用户则退出）
+        # 需要你在仓库 Secrets 中设置 PAT_PUSH_USER（PAT 所属用户名），例如 "my-sync-bot"
+        run: |
+          if [ -n "${{ secrets.PAT_PUSH_USER }}" ] && [ "${{ github.actor }}" = "${{ secrets.PAT_PUSH_USER }}" ]; then
+            echo "由自动化用户 '${{ secrets.PAT_PUSH_USER }}' 触发，退出以防循环。"
+            exit 0
+          fi
+          echo "触发者: $GITHUB_ACTOR"
 
-    - name: 检出代码（不保留默认凭证）
-      uses: actions/checkout@v4
-      with:
-        # 使用默认 GITHUB_TOKEN 进行 checkout，但不 persist 到 git credential，以便后面用 PAT 推送
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
-        persist-credentials: false
+      - name: 检出代码（不保留默认凭证）
+        uses: actions/checkout@v4
+        with:
+          # 使用默认 GITHUB_TOKEN 进行 checkout，但不 persist 到 git credential，以便后面用 PAT 推送
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
 
-    - name: 设置 Git 配置
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
+      - name: 设置 Git 配置
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
 
-    - name: 确保 jq 可用
-      run: |
-        if ! command -v jq >/dev/null 2>&1; then
-          sudo apt-get update -y
-          sudo apt-get install -y jq
-        fi
+      - name: 确保 jq 可用
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
 
-    - name: 获取上游最新 commit SHA
-      id: upstream
-      run: |
-        API="https://api.github.com/repos/${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}/commits/${{ env.UPSTREAM_BRANCH }}"
-        echo "Querying $API"
-        upstream_sha=$(curl -s -H "Accept: application/vnd.github+json" -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API" | jq -r .sha)
-        if [ -z "$upstream_sha" ] || [ "$upstream_sha" = "null" ]; then
-          echo "无法获取上游 SHA"
-          exit 1
-        fi
-        echo "upstream_sha=$upstream_sha" >> $GITHUB_OUTPUT
-
-    - name: 检查上次同步的 SHA
-      id: check
-      run: |
-        LAST_FILE="${{ env.LAST_SYNC_FILE }}"
-        if [ -f "$LAST_FILE" ]; then
-          last_sha=$(cat "$LAST_FILE" || true)
-        else
-          last_sha=""
-        fi
-        echo "last_sha=$last_sha" >> $GITHUB_OUTPUT
-        if [ "$last_sha" = "${{ steps.upstream.outputs.upstream_sha }}" ]; then
-          echo "has-changes=false" >> $GITHUB_OUTPUT
-        else
-          echo "has-changes=true" >> $GITHUB_OUTPUT
-        fi
-
-    - name: 上游未变更，退出
-      if: steps.check.outputs.has-changes == 'false'
-      run: |
-        echo "上游 commit 未变化，跳过同步。"
-
-    - name: 下载并解压文件（仅在上游变更时）
-      if: steps.check.outputs.has-changes == 'true'
-      run: |
-        echo "开始下载文件..."
-        curl -L -o "data.zip" "${{ env.ZIP_URL }}"
-        if [ ! -f "data.zip" ]; then
-          echo "下载失败"
-          exit 1
-        fi
-        mkdir -p tmp
-        unzip -o "data.zip" -d tmp
-        echo "查找 tvbox 目录..."
-        if [ -d "tmp/TVBoxOSC/tvbox" ]; then
-          echo "找到 tmp/TVBoxOSC/tvbox，复制到仓库根目录..."
-          rsync -a tmp/TVBoxOSC/tvbox/ .
-        else
-          tvbox_dir=$(find tmp -type d -name tvbox | head -n1 || true)
-          if [ -n "$tvbox_dir" ]; then
-            echo "找到 tvbox 目录：$tvbox_dir，复制到仓库根目录..."
-            rsync -a "$tvbox_dir"/. .
-          else
-            echo "未找到 tvbox 目录，列出 tmp 内容以供调试:"
-            ls -R tmp
-            rm -rf tmp data.zip
+      - name: 获取上游最新 commit SHA
+        id: upstream
+        run: |
+          API="https://api.github.com/repos/${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}/commits/${{ env.UPSTREAM_BRANCH }}"
+          echo "Querying $API"
+          upstream_sha=$(curl -s -H "Accept: application/vnd.github+json" -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API" | jq -r .sha)
+          if [ -z "$upstream_sha" ] || [ "$upstream_sha" = "null" ]; then
+            echo "无法获取上游 SHA"
             exit 1
           fi
-        fi
-        rm -rf tmp data.zip
-        echo "下载并复制完成"
+          echo "upstream_sha=$upstream_sha" >> $GITHUB_OUTPUT
 
-    - name: Debug: 验证 PAT 有效性（不打印 token）
-      if: steps.check.outputs.has-changes == 'true'
-      env:
-        PAT_PUSH: ${{ secrets.PAT_PUSH }}
-      run: |
-        # 检查 secret 是否存在
-        if [ -z "${PAT_PUSH}" ]; then
-          echo "ERROR: secrets.PAT_PUSH 为空，请在仓库 Settings → Secrets → Actions 添加 PAT_PUSH。"
-          exit 1
-        fi
+      - name: 检查上次同步的 SHA
+        id: check
+        run: |
+          LAST_FILE="${{ env.LAST_SYNC_FILE }}"
+          if [ -f "$LAST_FILE" ]; then
+            last_sha=$(cat "$LAST_FILE" || true)
+          else
+            last_sha=""
+          fi
+          echo "last_sha=$last_sha" >> $GITHUB_OUTPUT
+          if [ "$last_sha" = "${{ steps.upstream.outputs.upstream_sha }}" ]; then
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+          fi
 
-        echo "正在验证 PAT（不会在日志中打印 token 本体）..."
-        resp=$(curl -s -H "Authorization: token ${PAT_PUSH}" https://api.github.com/user || true)
+      - name: 上游未变更，退出
+        if: steps.check.outputs.has-changes == 'false'
+        run: |
+          echo "上游 commit 未变化，跳过同步。"
 
-        # 解析 login（优先用 jq）
-        if command -v jq >/dev/null 2>&1; then
-          login=$(echo "$resp" | jq -r .login 2>/dev/null || echo "")
-        else
-          login=$(printf '%s' "$resp" | grep -o '"login"[[:space:]]*:[[:space:]]*"[^"]\+"' | head -n1 | sed -E 's/.*"login"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || echo "")
-        fi
+      - name: 下载并解压文件（仅在上游变更时）
+        if: steps.check.outputs.has-changes == 'true'
+        run: |
+          echo "开始下载文件..."
+          curl -L -o "data.zip" "${{ env.ZIP_URL }}"
+          if [ ! -f "data.zip" ]; then
+            echo "下载失败"
+            exit 1
+          fi
+          mkdir -p tmp
+          unzip -o "data.zip" -d tmp
+          echo "查找 tvbox 目录..."
+          if [ -d "tmp/TVBoxOSC/tvbox" ]; then
+            echo "找到 tmp/TVBoxOSC/tvbox，复制到仓库根目录..."
+            rsync -a tmp/TVBoxOSC/tvbox/ .
+          else
+            tvbox_dir=$(find tmp -type d -name tvbox | head -n1 || true)
+            if [ -n "$tvbox_dir" ]; then
+              echo "找到 tvbox 目录：$tvbox_dir，复制到仓库根目录..."
+              rsync -a "$tvbox_dir"/. .
+            else
+              echo "未找到 tvbox 目录，列出 tmp 内容以供调试:"
+              ls -R tmp
+              rm -rf tmp data.zip
+              exit 1
+            fi
+          fi
+          rm -rf tmp data.zip
+          echo "下载并复制完成"
 
-        if [ -z "$login" ] || [ "$login" = "null" ]; then
-          echo "ERROR: PAT 无效或权限不足。API 返回："
-          echo "$resp"
-          exit 1
-        fi
+      - name: Debug: 验证 PAT 有效性（不打印 token）
+        if: steps.check.outputs.has-changes == 'true'
+        env:
+          PAT_PUSH: ${{ secrets.PAT_PUSH }}
+        run: |
+          # 检查 secret 是否存在
+          if [ -z "${PAT_PUSH}" ]; then
+            echo "ERROR: secrets.PAT_PUSH 为空，请在仓库 Settings → Secrets → Actions 添加 PAT_PUSH。"
+            exit 1
+          fi
 
-        echo "PAT 验证通过，所属用户: $login"
+          echo "正在验证 PAT（不会在日志中打印 token 本体）..."
+          resp=$(curl -s -H "Authorization: token ${PAT_PUSH}" https://api.github.com/user || true)
 
-        # 显示当前 git remote/status/log（不显示 token）
-        git remote -v
-        git status --porcelain
-        git log -1 --pretty=fuller
+          # 解析 login（优先用 jq）
+          if command -v jq >/dev/null 2>&1; then
+            login=$(echo "$resp" | jq -r .login 2>/dev/null || echo "")
+          else
+            login=$(printf '%s' "$resp" | grep -o '"login"[[:space:]]*:[[:space:]]*"[^"]\+"' | head -n1 | sed -E 's/.*"login"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || echo "")
+          fi
 
-    - name: 使用 PAT 更新 last_synced 文件并推送更改（仅在上游变更时）
-      if: steps.check.outputs.has-changes == 'true'
-      env:
-        PAT_PUSH: ${{ secrets.PAT_PUSH }}
-      run: |
-        set -e
-        echo "${{ steps.upstream.outputs.upstream_sha }}" > "${{ env.LAST_SYNC_FILE }}"
-        git add "${{ env.LAST_SYNC_FILE }}" || true
-        # 准备提交（含标记 [auto-sync]）
-        if [ -n "$(git status --porcelain)" ]; then
-          git add .
-          git commit -m "自动更新 (同步自 ${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}@${{ steps.upstream.outputs.upstream_sha }}) [auto-sync]"
-        else
-          # 没有内容变化，但仍要记录 upstream SHA，通过空提交记录
-          git commit --allow-empty -m "更新 last_synced_upstream_commit -> ${{ steps.upstream.outputs.upstream_sha }} [auto-sync]"
-        fi
+          if [ -z "$login" ] || [ "$login" = "null" ]; then
+            echo "ERROR: PAT 无效或权限不足。API 返回："
+            echo "$resp"
+            exit 1
+          fi
 
-        # 使用 PAT 修改远程 URL 并 push（确保你在仓库 Secrets 中配置 PAT_PUSH）
-        echo "设置远程 origin URL（使用 PAT）"
-        git remote set-url origin https://x-access-token:${PAT_PUSH}@github.com/${{ github.repository }}.git
+          echo "PAT 验证通过，所属用户: $login"
 
-        echo "推送到 origin main ..."
-        git push origin HEAD:main
-        echo "已用 PAT 推送更改。"
+          # 显示当前 git remote/status/log（不显示 token）
+          git remote -v
+          git status --porcelain
+          git log -1 --pretty=fuller
+
+      - name: 使用 PAT 更新 last_synced 文件并推送更改（仅在上游变更时）
+        if: steps.check.outputs.has-changes == 'true'
+        env:
+          PAT_PUSH: ${{ secrets.PAT_PUSH }}
+        run: |
+          set -e
+          echo "${{ steps.upstream.outputs.upstream_sha }}" > "${{ env.LAST_SYNC_FILE }}"
+          git add "${{ env.LAST_SYNC_FILE }}" || true
+          # 准备提交（含标记 [auto-sync]）
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "自动更新 (同步自 ${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}@${{ steps.upstream.outputs.upstream_sha }}) [auto-sync]"
+          else
+            # 没有内容变化，但仍要记录 upstream SHA，通过空提交记录
+            git commit --allow-empty -m "更新 last_synced_upstream_commit -> ${{ steps.upstream.outputs.upstream_sha }} [auto-sync]"
+          fi
+
+          # 使用 PAT 修改远程 URL 并 push（确保你在仓库 Secrets 中配置 PAT_PUSH）
+          echo "设置远程 origin URL（使用 PAT）"
+          git remote set-url origin https://x-access-token:${PAT_PUSH}@github.com/${{ github.repository }}.git
+
+          echo "推送到 origin main ..."
+          git push origin HEAD:main
+          echo "已用 PAT 推送更改。"
